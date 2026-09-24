@@ -123,6 +123,10 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             UIApplication.getEVC().fill(note: note)
             UIApplication.getVC().openEditorViewController()
 
+            if url.host == "find" {
+                UIApplication.getEVC().moveCaretToEnd()
+            }
+
             print("File imported: \(note.url)")
         } else {
             guard url.startAccessingSecurityScopedResource(), let inbox = storage.getDefault() else {

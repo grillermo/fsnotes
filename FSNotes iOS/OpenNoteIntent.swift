@@ -22,8 +22,11 @@ struct OpenNoteIntent: AppIntent {
     func perform() async throws -> some IntentResult {
         let title = noteTitle.trimmingCharacters(in: .whitespacesAndNewlines)
 
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&=+#")
+
         guard !title.isEmpty,
-              let encoded = title.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let encoded = title.addingPercentEncoding(withAllowedCharacters: allowed),
               let url = URL(string: "fsnotes://find?id=\(encoded)"),
               let sceneDelegate = UIApplication.getSceneDelegate() else {
             return .result()

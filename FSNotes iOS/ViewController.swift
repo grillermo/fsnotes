@@ -496,6 +496,7 @@ class ViewController: UIViewController, UISearchBarDelegate, UIGestureRecognizer
                         OperationQueue.main.addOperation {
                             self.notesTable.hideLoader()
                             UIApplication.getEVC().load(note: note)
+                            UIApplication.getEVC().moveCaretToEnd()
                         }
                     }
                 }

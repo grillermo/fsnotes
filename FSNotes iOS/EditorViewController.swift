@@ -1442,6 +1442,28 @@ class EditorViewController: UIViewController,
         self.userActivity?.becomeCurrent()
     }
 
+    /// Switches to edit mode and puts the caret at the end of the note, scrolled into view.
+    /// Delayed so it runs after the push animation and loadSelectedRange's scroll restore.
+    public func moveCaretToEnd() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self = self, self.note != nil else { return }
+
+            if self.note?.previewState == true {
+                self.togglePreview()
+            }
+
+            let end = NSRange(location: self.editArea.textStorage.length, length: 0)
+            _ = self.editArea.becomeFirstResponder()
+            self.editArea.selectedRange = end
+            self.editArea.scrollRangeToVisible(end)
+
+            // Scroll again once the keyboard insets are applied.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                self.editArea.scrollRangeToVisible(self.editArea.selectedRange)
+            }
+        }
+    }
+
     public func load(note: Note) {
         let evc = UIApplication.getEVC()
         evc.editArea.resignFirstResponder()
