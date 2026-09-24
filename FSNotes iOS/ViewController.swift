@@ -55,7 +55,6 @@ class ViewController: UIViewController, UISearchBarDelegate, UIGestureRecognizer
     // Swipe animation from handleSidebarSwipe
     private var sidebarWidth: CGFloat = 0
     private var isLandscape: Bool?
-    public var restoreFindID: String?
     
     public var isLoadedDB: Bool = false
     public var isLoadedSidebar: Bool = false
@@ -456,6 +455,52 @@ class ViewController: UIViewController, UISearchBarDelegate, UIGestureRecognizer
         }
     }
 
+    // MARK: - Open note by title (fsnotes://find, Open Note shortcut)
+
+    private var pendingOpenTitle: String?
+    private var pendingOpenDeadline = Date()
+    private var isPendingOpenScheduled = false
+
+    /// Opens the note with the caret at its end. While notes are still loading or
+    /// syncing the note may not be found yet, so keep retrying instead of giving up.
+    public func openNoteAtEnd(title: String) {
+        pendingOpenTitle = title
+        pendingOpenDeadline = Date().addingTimeInterval(30)
+
+        if !isPendingOpenScheduled {
+            tryOpenPendingNote()
+        }
+    }
+
+    private func tryOpenPendingNote() {
+        isPendingOpenScheduled = false
+        guard let title = pendingOpenTitle else { return }
+
+        if let note = storage.getBy(title: title) ?? storage.getBy(fileName: title) {
+            pendingOpenTitle = nil
+            notesTable.hideLoader()
+
+            let evc = UIApplication.getEVC()
+            evc.load(note: note)
+            evc.moveCaretToEnd()
+            return
+        }
+
+        guard Date() < pendingOpenDeadline else {
+            pendingOpenTitle = nil
+
+            let alert = UIAlertController(title: "Note not found", message: "No note titled \"\(title)\".", preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .cancel))
+            (presentedViewController ?? self).present(alert, animated: true)
+            return
+        }
+
+        isPendingOpenScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.tryOpenPendingNote()
+        }
+    }
+
     public func loadDB() {
         let storage = self.storage
         
@@ -488,18 +533,6 @@ class ViewController: UIViewController, UISearchBarDelegate, UIGestureRecognizer
                 }
                 
                 print("3. Notes diff loading finished in \(diffLoading.timeIntervalSinceNow * -1) seconds")
-                
-                // find://
-                if let restore = self.restoreFindID {
-                    self.restoreFindID = nil
-                    if let note = Storage.shared().getBy(title: restore) {
-                        OperationQueue.main.addOperation {
-                            self.notesTable.hideLoader()
-                            UIApplication.getEVC().load(note: note)
-                            UIApplication.getEVC().moveCaretToEnd()
-                        }
-                    }
-                }
                 
                 // Load notes content
                 let notesFullLoading = Date()

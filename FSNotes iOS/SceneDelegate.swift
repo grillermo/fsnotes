@@ -99,7 +99,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     func handle(url: URL) {
         let vc = UIApplication.getVC()
         let storage = Storage.shared()
-        var note = storage.getBy(url: url)
+        let note = storage.getBy(url: url)
 
         if url.host == "open" {
             if let tag = url["tag"]?.removingPercentEncoding {
@@ -111,21 +111,14 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         if url.host == "find" {
             if let id = url["id"]?.removingPercentEncoding {
-                note = storage.getBy(title: id)
-                if !vc.isLoadedDB, note == nil {
-                    vc.restoreFindID = id
-                    return
-                }
+                vc.openNoteAtEnd(title: id)
             }
+            return
         }
 
         if let note = note {
             UIApplication.getEVC().fill(note: note)
             UIApplication.getVC().openEditorViewController()
-
-            if url.host == "find" {
-                UIApplication.getEVC().moveCaretToEnd()
-            }
 
             print("File imported: \(note.url)")
         } else {
