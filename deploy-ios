@@ -1,0 +1,353 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# deploy-ios
+#
+# Builds FSNotes for iOS, signed ad hoc with *your* paid Apple Developer team,
+# and publishes it for over-the-air install from Safari (itms-services://).
+# Same delivery route as ../patatatube/deploy: the .ipa, its OTA manifest and a
+# tiny install page are copied into ../file_to_s3/files, which files.chiq.me
+# serves. Open the install page on the iPhone in Safari, tap Install, done.
+#
+# Usage:
+#   ./deploy-ios                # build + publish OTA, print the install URL
+#   ./deploy-ios --install      # ^ and also push it straight to the paired
+#                               #   iPhone with devicectl (no Safari needed)
+#   ./deploy-ios --build-only   # build the .ipa and stop (no publish)
+#   ./deploy-ios --help
+#
+# Why a rebranded copy, not this checkout:
+#
+#   This checkout is upstream FSNotes (glushchenko/fsnotes). Its identifiers —
+#   bundle IDs `co.fluder.mobile.FSNotes-iOS*`, iCloud container
+#   `iCloud.co.fluder.fsnotes`, app group `group.es.fsnot.user.defaults` — are
+#   registered to the upstream author's team, and Apple will not let another
+#   team sign for them. So each run copies the working tree into a tmp dir,
+#   rewrites those identifiers to ones under your own prefix (BUNDLE_PREFIX
+#   below) and builds *that*. The checkout itself is never modified, so `git
+#   pull` from upstream keeps working with zero conflicts.
+#
+#   The app finds its iCloud container with
+#   `url(forUbiquityContainerIdentifier: nil)`, i.e. "whatever the entitlements
+#   declare", so renaming the container needs no code change. Consequence: this
+#   build's iCloud Drive folder is separate from the App Store FSNotes' one.
+#
+# Versioning: MARKETING_VERSION stays upstream's (e.g. 7.3.3); the build number
+# is a timestamp (YYYYMMDD.HHMM), so every deploy installs over the last one
+# and keeps your notes and settings.
+#
+# Instructions (one-time setup, publishing, troubleshooting): ./deploy-ios.md
+
+require "fileutils"
+require "shellwords"
+require "tmpdir"
+require "digest"
+require "time"
+
+# --- configuration -----------------------------------------------------------
+# Everything overridable by env var so a one-off never needs an edit.
+
+ROOT          = __dir__
+TEAM_ID       = ENV.fetch("FSNOTES_TEAM_ID", "Q3WS4MWCW3") # same paid team as PatataTube
+BUNDLE_PREFIX = ENV.fetch("FSNOTES_BUNDLE_PREFIX", "com.grillermo.fsnotes")
+APP_NAME      = "FSNotes"
+SCHEME        = "FSNotes iOS"
+PROJECT       = "FSNotes.xcodeproj"
+ICON_SRC      = File.join(ROOT, "FSNotes iOS/Assets.xcassets/Icons/AppIconModern.imageset/classic-iOS-Default-1024x1024@1x.png")
+
+# The iPhone 16e (iOS 18). Used by --install; the UDID is what must be
+# registered on the developer portal for the ad hoc profile to include it.
+DEVICE_UDID   = ENV.fetch("FSNOTES_DEVICE_UDID", "00008140-001509200E02801C")
+
+# files.chiq.me serves ../file_to_s3/files. Publishing is a copy into that
+# directory, not an HTTP upload (big bodies stall in the Cloudflare tunnel).
+FILES_BASE      = ENV.fetch("FSNOTES_FILES_BASE", "https://files.chiq.me").sub(%r{/+\z}, "")
+PUBLISH_DIR     = ENV.fetch("FSNOTES_PUBLISH_DIR", File.expand_path("../file_to_s3/files", ROOT))
+# Pinned names: overwritten in place by every deploy so the URLs never change.
+# One Home Screen bookmark of the install page updates the app forever.
+PINNED_MANIFEST = "fsnotes-manifest.plist"
+PINNED_ICON     = "fsnotes-icon.png"
+PINNED_INSTALL  = "e58c7006-f8fc-4111-8334-bda7fc96b41f-Install_FSNotes.html"
+MANIFEST_URL    = "#{FILES_BASE}/files/#{PINNED_MANIFEST}"
+ICON_URL        = "#{FILES_BASE}/files/#{PINNED_ICON}"
+INSTALL_URL     = "#{FILES_BASE}/files/#{PINNED_INSTALL}"
+ITMS_URL        = "itms-services://?action=download-manifest&url=#{MANIFEST_URL}"
+
+# Upstream identifier -> ours. Order matters: the longest/most specific first,
+# so the share extension's `co.fluder.mobile.FSNotes-iOS.FSNotes-iOS-Share`
+# becomes `<prefix>.FSNotes-iOS-Share` via the plain app-ID rule.
+REBRAND = {
+  "co.fluder.mobile.FSNotes-iOS"                  => BUNDLE_PREFIX,
+  "iCloud.co.fluder.fsnotes"                      => "iCloud.#{BUNDLE_PREFIX}",
+  "$(TeamIdentifierPrefix)co.fluder.fsnotes"      => "$(TeamIdentifierPrefix)#{BUNDLE_PREFIX}",
+  "group.es.fsnot.user.defaults"                  => "group.#{BUNDLE_PREFIX}",
+}.freeze
+
+# Files the identifiers live in. Only these are rewritten — a blanket
+# find/replace would also touch key names like "co.fluder.fsnotes.pins.shared"
+# that are data, not signing identifiers.
+REBRAND_FILES = [
+  "FSNotes.xcodeproj/project.pbxproj",
+  "FSNotes iOS/Info.plist",
+  "FSNotes iOS/FSNotes iOS.entitlements",
+  "FSNotes iOS Share/Info.plist",
+  "FSNotes iOS Share/FSNotes iOS Share.entitlements",
+  "FSNotes iOS/Extensions/UserDefaultsManagement+.swift",
+  "FSNotes iOS/Helpers/SandboxBookmark.swift",
+  "FSNotesCore/UserDefaultsManagement.swift",
+].freeze
+
+# --- helpers -----------------------------------------------------------------
+
+def bold(s) = "\e[1m#{s}\e[0m"
+def green(s) = "\e[32m#{s}\e[0m"
+def red(s) = "\e[31m#{s}\e[0m"
+def step(msg) = puts("\n#{bold("==> #{msg}")}")
+
+def die(msg)
+  warn red("error: #{msg}")
+  exit 1
+end
+
+def run(cmd, chdir: ROOT)
+  puts "    $ #{cmd}"
+  system(cmd, chdir: chdir) or die("command failed: #{cmd}")
+end
+
+def h(str)
+  str.to_s.gsub("&", "&amp;").gsub("<", "&lt;").gsub(">", "&gt;").gsub('"', "&quot;")
+end
+
+# Copy beside the target, then rename: a phone mid-download never reads a
+# half-written file while a pinned name is being overwritten.
+def publish_file(path, name:)
+  target = File.join(PUBLISH_DIR, name)
+  staged = "#{target}.publishing-#{Process.pid}"
+  begin
+    FileUtils.cp(path, staged)
+    File.rename(staged, target)
+  ensure
+    FileUtils.rm_f(staged)
+  end
+  "#{FILES_BASE}/files/#{name}"
+end
+
+# --- flags -------------------------------------------------------------------
+
+if ARGV.include?("--help") || ARGV.include?("-h")
+  puts File.read(__FILE__)[/^# Usage:.*?(?=^#\n# Why)/m].gsub(/^# ?/, "")
+  exit 0
+end
+BUILD_ONLY = !ARGV.delete("--build-only").nil?
+INSTALL    = !ARGV.delete("--install").nil?
+die("unknown argument(s): #{ARGV.join(' ')} (see --help)") unless ARGV.empty?
+
+# --- preflight ---------------------------------------------------------------
+
+developer_dir = ENV["DEVELOPER_DIR"]
+unless developer_dir && Dir.exist?(developer_dir)
+  xcode = Dir.glob("/Applications/Xcode*.app").max or die("no Xcode.app in /Applications")
+  developer_dir = File.join(xcode, "Contents", "Developer")
+end
+ENV["DEVELOPER_DIR"] = developer_dir
+
+unless BUILD_ONLY || File.directory?(PUBLISH_DIR)
+  die("#{PUBLISH_DIR} not found — it is what #{FILES_BASE} serves. " \
+      "Set FSNOTES_PUBLISH_DIR if it moved, or use --build-only.")
+end
+
+pbxproj   = File.read(File.join(ROOT, PROJECT, "project.pbxproj"))
+# The iOS app target's MARKETING_VERSION (the macOS targets carry their own).
+version   = pbxproj[/INFOPLIST_FILE = "FSNotes iOS\/Info\.plist";.*?MARKETING_VERSION = ([\d.]+);/m, 1] ||
+            pbxproj[/MARKETING_VERSION = ([\d.]+);/, 1] || "0.0.0"
+build     = Time.now.strftime("%Y%m%d.%H%M")
+asset     = "#{APP_NAME}-#{version}-#{build}.ipa"
+ipa_url   = "#{FILES_BASE}/files/#{asset}"
+commit    = `git -C #{ROOT.shellescape} rev-parse --short HEAD`.strip
+dirty     = !`git -C #{ROOT.shellescape} status --porcelain`.strip.empty?
+
+puts bold("\n==> #{APP_NAME} iOS #{version} (build #{build}) from #{commit}#{dirty ? ' + uncommitted changes' : ''}")
+puts "    team #{TEAM_ID}, bundle #{BUNDLE_PREFIX}, DEVELOPER_DIR=#{developer_dir}"
+
+work = Dir.mktmpdir("fsnotes-ios-")
+at_exit { FileUtils.remove_entry(work) if work && Dir.exist?(work) && !ENV["FSNOTES_KEEP_WORK"] }
+
+# --- 1. rebranded copy -------------------------------------------------------
+
+step "Copying working tree + rebranding identifiers"
+src = File.join(work, "src")
+run("rsync -a --exclude .git --exclude .code-review-graph --exclude build " \
+    "#{(ROOT + '/').shellescape} #{src.shellescape}")
+
+REBRAND_FILES.each do |rel|
+  path = File.join(src, rel)
+  die("expected #{rel} — did upstream move it? Update REBRAND_FILES.") unless File.exist?(path)
+  text = File.read(path)
+  REBRAND.each { |from, to| text = text.gsub(from, to) }
+  text = text.gsub(/DEVELOPMENT_TEAM = [A-Z0-9]*;/, "DEVELOPMENT_TEAM = #{TEAM_ID};") if rel.end_with?(".pbxproj")
+  File.write(path, text)
+end
+
+leftovers = REBRAND_FILES.flat_map do |rel|
+  File.readlines(File.join(src, rel)).grep(/co\.fluder\.mobile|iCloud\.co\.fluder|group\.es\.fsnot/).map { |l| "#{rel}: #{l.strip}" }
+end
+die("upstream identifiers survived the rebrand:\n  #{leftovers.join("\n  ")}") unless leftovers.empty?
+puts green("    #{BUNDLE_PREFIX}, iCloud.#{BUNDLE_PREFIX}, group.#{BUNDLE_PREFIX}")
+
+# --- 2. archive --------------------------------------------------------------
+
+step "Archiving (xcodebuild, Release, generic iOS)"
+archive = File.join(work, "#{APP_NAME}.xcarchive")
+log     = File.join(work, "archive.log")
+# -allowProvisioningUpdates lets Xcode create/refresh the App IDs, iCloud
+# container, app group and profiles for your team from the Apple ID signed in
+# under Xcode -> Settings -> Accounts. CURRENT_PROJECT_VERSION on the command
+# line applies to the app *and* the share extension, which must match.
+archive_cmd =
+  "xcodebuild -project #{PROJECT.shellescape} -scheme #{SCHEME.shellescape} " \
+  "-configuration Release -destination 'generic/platform=iOS' " \
+  "-archivePath #{archive.shellescape} " \
+  "DEVELOPMENT_TEAM=#{TEAM_ID} CURRENT_PROJECT_VERSION=#{build} " \
+  "-allowProvisioningUpdates archive"
+puts "    $ #{archive_cmd}"
+puts "    (full log: #{log}; set FSNOTES_KEEP_WORK=1 to keep it after exit)"
+ok = system("set -o pipefail; #{archive_cmd} 2>&1 | tee #{log.shellescape} | grep -E '(: error:|^error:|: warning: .*(provision|sign)|\\*\\* )' ", chdir: src)
+unless ok && Dir.exist?(archive)
+  ENV["FSNOTES_KEEP_WORK"] = "1"
+  die("archive failed — see #{log}. Signing errors: ./deploy-ios.md, Troubleshooting.")
+end
+puts green("    archived: #{archive}")
+
+# --- 3. export (ad hoc + OTA manifest) --------------------------------------
+
+step "Exporting signed .ipa (ad hoc / release-testing)"
+# `release-testing` is Xcode 15.3+'s name for ad-hoc: re-signs with the team's
+# distribution certificate against an Ad Hoc profile listing every registered
+# device. The `manifest` dict makes xcodebuild write the itms-services
+# manifest.plist itself, so it can never describe a different binary.
+options = File.join(work, "ExportOptions.plist")
+File.write(options, <<~PLIST)
+  <?xml version="1.0" encoding="UTF-8"?>
+  <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+  <plist version="1.0">
+  <dict>
+    <key>method</key><string>release-testing</string>
+    <key>teamID</key><string>#{TEAM_ID}</string>
+    <key>signingStyle</key><string>automatic</string>
+    <key>stripSwiftSymbols</key><true/>
+    <key>thinning</key><string>&lt;none&gt;</string>
+    <key>destination</key><string>export</string>
+    <key>manifest</key>
+    <dict>
+      <key>appURL</key><string>#{h(ipa_url)}</string>
+      <key>displayImageURL</key><string>#{h(ICON_URL)}</string>
+      <key>fullSizeImageURL</key><string>#{h(ICON_URL)}</string>
+    </dict>
+  </dict>
+  </plist>
+PLIST
+export = File.join(work, "export")
+run("xcodebuild -exportArchive -archivePath #{archive.shellescape} " \
+    "-exportPath #{export.shellescape} -exportOptionsPlist #{options.shellescape} " \
+    "-allowProvisioningUpdates 2>&1 | grep -vE '^\\s*$' | tail -25; test -f #{File.join(export, 'manifest.plist').shellescape}",
+    chdir: src)
+
+ipa = Dir.glob(File.join(export, "*.ipa")).first or die("export produced no .ipa in #{export}")
+released = File.join(work, asset)
+FileUtils.cp(ipa, released)
+manifest = File.join(export, "manifest.plist")
+
+size = File.size(released)
+puts green("    #{asset} — #{(size / 1_048_576.0).round(1)} MB  sha256:#{Digest::SHA256.file(released).hexdigest[0, 12]}…")
+
+# Is the iPhone actually in the ad hoc profile? If not, iOS refuses the install
+# with a vague "Unable to Install" — say so now, not after a trip to the phone.
+profile_xml = `cd #{work.shellescape} && unzip -p #{released.shellescape} 'Payload/*.app/embedded.mobileprovision' | security cms -D 2>/dev/null`
+if profile_xml.include?(DEVICE_UDID)
+  puts green("    iPhone 16e (#{DEVICE_UDID}) is in the ad hoc profile")
+else
+  puts red("    ⚠  #{DEVICE_UDID} is NOT in the ad hoc profile — register it on the")
+  puts red("       portal (./deploy-ios.md, step 3) and run ./deploy-ios again.")
+end
+
+if BUILD_ONLY
+  out = File.join(ROOT, "build", asset)
+  FileUtils.mkdir_p(File.dirname(out))
+  FileUtils.cp(released, out)
+  puts green("\n✓ Built #{out} (not published: --build-only)")
+  exit 0
+end
+
+# --- 4. publish --------------------------------------------------------------
+
+step "Publishing to #{FILES_BASE} (#{PUBLISH_DIR})"
+icon = File.join(work, "icon.png")
+run("sips -Z 512 #{ICON_SRC.shellescape} --out #{icon.shellescape} >/dev/null")
+
+install_page = File.join(work, "install.html")
+File.write(install_page, <<~HTML)
+  <!doctype html>
+  <html lang="en">
+  <head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Install FSNotes</title>
+  <link rel="apple-touch-icon" href="#{h(ICON_URL)}">
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; padding: 2.5rem 1.25rem 4rem; background: #111; color: #f2f2f2;
+      font: 16px/1.55 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+      display: flex; flex-direction: column; align-items: center; }
+    main { width: 100%; max-width: 26rem; }
+    img.icon { width: 88px; height: 88px; border-radius: 20px; display: block; margin: 0 auto 1.25rem; }
+    h1 { font-size: 1.6rem; margin: 0 0 .25rem; text-align: center; }
+    .version { text-align: center; color: #9a9a9a; margin: 0 0 2rem; font-size: .95rem; }
+    a.install { display: block; background: #0a84ff; color: #fff; text-decoration: none;
+      font-weight: 600; font-size: 1.05rem; text-align: center; padding: 1rem;
+      border-radius: 14px; margin-bottom: 1.5rem; }
+    p { color: #b0b0b0; font-size: .9rem; }
+  </style>
+  </head>
+  <body>
+  <main>
+    <img class="icon" src="#{h(ICON_URL)}" alt="">
+    <h1>FSNotes</h1>
+    <p class="version">Version #{h(version)} (build #{h(build)}) · #{h(commit)}</p>
+    <a class="install" href="#{h(ITMS_URL)}">Install FSNotes</a>
+    <p>Open this page in <strong>Safari</strong>, tap Install, then confirm. The
+    button always installs the newest deploy, so bookmark this page (Share &rarr;
+    Add to Home Screen) and tap it again to update. Notes and settings are kept.</p>
+  </main>
+  </body>
+  </html>
+HTML
+
+puts "    #{publish_file(released, name: asset)}"
+puts "    #{publish_file(icon, name: PINNED_ICON)}"
+puts "    #{publish_file(manifest, name: PINNED_MANIFEST)}"
+puts "    #{publish_file(install_page, name: PINNED_INSTALL)}"
+
+# Old .ipas pile up otherwise; the manifest only ever points at the newest.
+Dir.glob(File.join(PUBLISH_DIR, "#{APP_NAME}-*.ipa")).sort_by { |f| File.mtime(f) }[0...-2].each do |old|
+  FileUtils.rm_f(old)
+  puts "    pruned #{File.basename(old)}"
+end
+
+# --- 5. optional direct install ----------------------------------------------
+
+if INSTALL
+  step "Installing on the iPhone (devicectl)"
+  # Non-fatal: the OTA route above is already live, and the usual failure here
+  # is just a locked phone (kAMDMobileImageMounterDeviceLocked).
+  cmd = "xcrun devicectl device install app --device #{DEVICE_UDID} #{released.shellescape}"
+  puts "    $ #{cmd}"
+  unless system("bash", "-c", "#{cmd} 2>&1 | grep -E '^(ERROR|App installed|\\s+bundleID)' | head -5; exit ${PIPESTATUS[0]}")
+    puts red("    ⚠  direct install failed (is the iPhone unlocked, on the same Wi‑Fi or cabled?).")
+    puts red("       Use the Safari link below instead — it is already published.")
+  end
+end
+
+puts green("\n✓ Published #{APP_NAME} #{version} (build #{build})")
+puts "\n  On the iPhone, open in Safari and tap Install:"
+puts bold("    #{INSTALL_URL}")
+puts "  (Add it to the Home Screen once — the URL never changes.)"
