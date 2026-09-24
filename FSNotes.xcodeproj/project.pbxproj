@@ -51,6 +51,7 @@
 		113685642EC869950033767F /* URL+Image.swift in Sources */ = {isa = PBXBuildFile; fileRef = 113685612EC869860033767F /* URL+Image.swift */; };
 		113685652EC869950033767F /* URL+Image.swift in Sources */ = {isa = PBXBuildFile; fileRef = 113685612EC869860033767F /* URL+Image.swift */; };
 		113685682EC889E20033767F /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 113685672EC889DC0033767F /* SceneDelegate.swift */; };
+		1A7E0C022F5000010000A001 /* OpenNoteIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A7E0C012F5000010000A001 /* OpenNoteIntent.swift */; };
 		1136856A2EC8AE2F0033767F /* UIBarButtonItem+.swift in Sources */ = {isa = PBXBuildFile; fileRef = 113685692EC8AE260033767F /* UIBarButtonItem+.swift */; };
 		113A31A02EEE2D47009B50B0 /* Note+Preview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 113A319F2EEE2D3A009B50B0 /* Note+Preview.swift */; };
 		113A31A12EEE2D47009B50B0 /* Note+Preview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 113A319F2EEE2D3A009B50B0 /* Note+Preview.swift */; };
@@ -938,6 +939,7 @@
 		1136855B2EC7A69C0033767F /* Platform.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Platform.swift; sourceTree = "<group>"; };
 		113685612EC869860033767F /* URL+Image.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "URL+Image.swift"; sourceTree = "<group>"; };
 		113685672EC889DC0033767F /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
+		1A7E0C012F5000010000A001 /* OpenNoteIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenNoteIntent.swift; sourceTree = "<group>"; };
 		113685692EC8AE260033767F /* UIBarButtonItem+.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UIBarButtonItem+.swift"; sourceTree = "<group>"; };
 		113A319F2EEE2D3A009B50B0 /* Note+Preview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Note+Preview.swift"; sourceTree = "<group>"; };
 		11598DA22EDCB8D40036E387 /* UIFont+.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UIFont+.swift"; sourceTree = "<group>"; };
@@ -1736,6 +1738,7 @@
 				D7BDFE66201F679B00897A58 /* FSNotes iOS.entitlements */,
 				D7679388201F21F5000F7BBF /* AppDelegate.swift */,
 				113685672EC889DC0033767F /* SceneDelegate.swift */,
+				1A7E0C012F5000010000A001 /* OpenNoteIntent.swift */,
 				111013142EC8F1B600B6CF1B /* ImagePreviewViewController.swift */,
 				D7E7DB3227A9B16F00408725 /* DatePickerViewController.swift */,
 				D71AA0212143A4A8004AFD2A /* MoveViewController.swift */,
@@ -2483,6 +2486,7 @@
 				D75629B327D4DE9F00F55588 /* CodeThemeViewController.swift in Sources */,
 				D7FDA4F7236DBC6900C3B4AA /* Sidebar.swift in Sources */,
 				113685682EC889E20033767F /* SceneDelegate.swift in Sources */,
+				1A7E0C022F5000010000A001 /* OpenNoteIntent.swift in Sources */,
 				D71FD2252101CFD0008BEFA1 /* UITextView+.swift in Sources */,
 				D70E9E052901AEC400A3C634 /* Index+Files.swift in Sources */,
 				D70E9DF82901AEAF00A3C634 /* Strings.swift in Sources */,

@@ -96,7 +96,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         handle(url: url)
     }
 
-    private func handle(url: URL) {
+    func handle(url: URL) {
         let vc = UIApplication.getVC()
         let storage = Storage.shared()
         var note = storage.getBy(url: url)
