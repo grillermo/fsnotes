@@ -56,7 +56,16 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             userInfo: nil
         )
 
-        application.shortcutItems = [shortcutNew, shortcutNewClipboard, shortcutSearch]
+        let installLatest = NSLocalizedString("Install Latest", comment: "")
+        let shortcutInstallLatest = UIMutableApplicationShortcutItem(
+            type: ShortcutIdentifier.installLatest.type,
+            localizedTitle: installLatest,
+            localizedSubtitle: "",
+            icon: UIApplicationShortcutIcon(systemImageName: "arrow.down.app"),
+            userInfo: nil
+        )
+
+        application.shortcutItems = [shortcutNew, shortcutNewClipboard, shortcutSearch, shortcutInstallLatest]
 
         return true
     }

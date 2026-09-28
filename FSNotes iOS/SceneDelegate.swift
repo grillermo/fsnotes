@@ -12,6 +12,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     var window: UIWindow?
     var launchedShortcutItem: UIApplicationShortcutItem?
+    var pendingInstallURL: URL?
 
     var listController = UIStoryboard(name: "Main", bundle: nil).instantiateViewController(withIdentifier: "listViewController") as! ViewController
     var editorController = UIStoryboard(name: "Main", bundle: nil).instantiateViewController(withIdentifier: "editorViewController") as! EditorViewController
@@ -22,7 +23,11 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         // Handle shortcut from cold launch
         if let shortcutItem = connectionOptions.shortcutItem {
-            launchedShortcutItem = shortcutItem
+            if ShortcutIdentifier(fullType: shortcutItem.type) == .installLatest {
+                pendingInstallURL = ShortcutIdentifier.installLatest.url
+            } else {
+                launchedShortcutItem = shortcutItem
+            }
         }
 
         window = UIWindow(windowScene: windowScene)
@@ -58,7 +63,11 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     func sceneDidBecomeActive(_ scene: UIScene) {
-        // Called when the scene has moved from an inactive state to an active state.
+        // Opening itms-services before the scene is active is unreliable.
+        if let url = pendingInstallURL {
+            pendingInstallURL = nil
+            UIApplication.shared.open(url)
+        }
     }
 
     func sceneWillResignActive(_ scene: UIScene) {
@@ -77,6 +86,17 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     // MARK: - Shortcut Actions
 
     func windowScene(_ windowScene: UIWindowScene, performActionFor shortcutItem: UIApplicationShortcutItem, completionHandler: @escaping (Bool) -> Void) {
+        if ShortcutIdentifier(fullType: shortcutItem.type) == .installLatest,
+           let url = ShortcutIdentifier.installLatest.url {
+            if windowScene.activationState == .foregroundActive {
+                UIApplication.shared.open(url)
+            } else {
+                pendingInstallURL = url
+            }
+            completionHandler(true)
+            return
+        }
+
         handle(shortcutItem: shortcutItem)
         completionHandler(true)
     }

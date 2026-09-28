@@ -12,6 +12,7 @@ enum ShortcutIdentifier: String {
     case makeNew
     case search
     case clipboard
+    case installLatest
 
     // MARK: - Initializers
 
@@ -24,5 +25,16 @@ enum ShortcutIdentifier: String {
 
     var type: String {
         return Bundle.main.bundleIdentifier! + ".\(self.rawValue)"
+    }
+
+    // ./deploy-ios republishes the manifest under this pinned name on every
+    // release, so the link always installs the newest ad hoc build.
+    var url: URL? {
+        switch self {
+        case .installLatest:
+            return URL(string: "itms-services://?action=download-manifest&url=https://files.chiq.me/files/fsnotes-manifest.plist")
+        default:
+            return nil
+        }
     }
 }
